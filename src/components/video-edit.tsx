@@ -27,6 +27,7 @@ import { initWorker } from '@/lib/canvas.worker';
 
 type VideoFilter = 'none' | 'sepia' | 'grayscale' | 'invert';
 type Resolution = '1080p' | '720p' | '540p';
+type Format = 'webm' | 'mp4';
 
 const VideoEditor = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -34,6 +35,7 @@ const VideoEditor = () => {
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const [fps, setFps] = useState(30);
   const [resolution, setResolution] = useState<Resolution>('720p');
+  const [format, setFormat] = useState<Format>('webm');
   const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
 
@@ -215,11 +217,49 @@ const VideoEditor = () => {
       const outputCtx = outputCanvas.getContext('2d');
       if (!outputCtx) return;
 
-      const stream = outputCanvas.captureStream(fps);
+      let audioStream = null;
+      let audioContext = null;
+      let audioDestination = null;
+      let audioSourceNode = null;
 
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp9',
-        videoBitsPerSecond: 50_00_000,
+      try {
+        if (!videoUrl) return;
+        audioContext = new AudioContext();
+        const response = await fetch(videoUrl);
+        const arrayBuffer = await response.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+        audioSourceNode = audioContext.createBufferSource();
+        audioSourceNode.buffer = audioBuffer;
+
+        audioDestination = audioContext.createMediaStreamDestination();
+        audioSourceNode.connect(audioDestination);
+
+        audioStream = audioDestination.stream;
+      } catch (error) {
+        console.warn('Could not extract audio:', error);
+      }
+
+      const videoStream = outputCanvas.captureStream(fps);
+      const combinedStream = new MediaStream();
+
+      videoStream.getVideoTracks().forEach(track => {
+        combinedStream.addTrack(track);
+      });
+
+      if (audioStream && audioStream.getAudioTracks().length > 0) {
+        audioStream.getAudioTracks().forEach(track => {
+          combinedStream.addTrack(track);
+        });
+      }
+
+      const mimeType =
+        format === 'mp4' ? 'video/mp4;codecs=h264' : 'video/webm;codecs=vp9';
+
+      const mediaRecorder = new MediaRecorder(combinedStream, {
+        mimeType: mimeType,
+        videoBitsPerSecond: 5000000,
+        audioBitsPerSecond: 192000,
       });
 
       const chunks: BlobPart[] = [];
@@ -231,13 +271,19 @@ const VideoEditor = () => {
 
       const recordingPromise = new Promise(resolve => {
         mediaRecorder.onstop = () => {
-          const blob = new Blob(chunks, { type: 'video/webm' });
+          const blob = new Blob(chunks, {
+            type: format === 'mp4' ? 'video/mp4' : 'video/webm',
+          });
           const url = URL.createObjectURL(blob);
           resolve(url);
         };
       });
 
       mediaRecorder.start();
+
+      if (audioSourceNode) {
+        audioSourceNode.start();
+      }
 
       const video = videoRef.current;
       const duration = video.duration;
@@ -288,6 +334,12 @@ const VideoEditor = () => {
       }
 
       mediaRecorder.stop();
+
+      if (audioSourceNode && audioContext) {
+        audioSourceNode.stop();
+        audioContext.close();
+      }
+
       const url = await recordingPromise;
 
       // Download the video
@@ -295,13 +347,15 @@ const VideoEditor = () => {
         downloadRef.current.href = url as string;
         downloadRef.current.download = `${
           filter !== 'none' ? filter + '-' : ''
-        }${resolution}-${fps}fps-video.webm`;
+        }${resolution}-${fps}fps-video.${format}`;
         downloadRef.current.click();
 
         toast.success('Export complete', {
           description: `Video processed with ${
             filter !== 'none' ? filter : 'no'
-          } filter at ${resolution}, ${fps} FPS`,
+          } filter at ${resolution}, ${fps} FPS with ${
+            audioStream ? 'audio' : 'no audio'
+          }`,
           icon: <ArrowDownToLine className="h-4 w-4" />,
           duration: 4000,
         });
@@ -396,7 +450,7 @@ const VideoEditor = () => {
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 mt-6">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                     <div>
                       <Label className="mb-2 block">Filter</Label>
                       <Select
@@ -447,8 +501,22 @@ const VideoEditor = () => {
                         </SelectContent>
                       </Select>
                     </div>
-                  </div>
 
+                    <div>
+                      <Label className="mb-2 block">Format</Label>
+                      <Select
+                        onValueChange={val => setFormat(val as Format)}
+                        defaultValue="webm">
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select Format" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="webm">WebM</SelectItem>
+                          <SelectItem value="mp4">MP4</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
                   <div className="flex flex-col sm:flex-row justify-end gap-3 mt-4">
                     <Button variant="outline" onClick={triggerFileInput}>
                       Change Video
