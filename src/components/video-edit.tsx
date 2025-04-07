@@ -38,9 +38,12 @@ const VideoEditor = () => {
   const [format, setFormat] = useState<Format>('webm');
   const [exportProgress, setExportProgress] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [videoWidth, setVideoWidth] = useState(16);
+  const [videoHeight, setVideoHeight] = useState(9);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const outputCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const downloadRef = useRef<HTMLAnchorElement | null>(null);
   const rafId = useRef<number | null>(null);
@@ -51,7 +54,7 @@ const VideoEditor = () => {
   }, [videoFile]);
 
   const getCanvasDimensions = () => {
-    const aspectRatio = 16 / 9;
+    const aspectRatio = videoWidth / videoHeight || 16 / 9;
     let height = 0;
 
     switch (resolution) {
@@ -126,9 +129,28 @@ const VideoEditor = () => {
   const handleVideoLoaded = () => {
     if (!canvasRef.current || !videoRef.current) return;
 
+    const video = videoRef.current;
+    setVideoWidth(video.videoWidth);
+    setVideoHeight(video.videoHeight);
+
+    toast.success('Video uploaded', {
+      description: `${videoFile?.name} (${(
+        videoFile?.size || 0 / (1024 * 1024)
+      ).toFixed(2)} MB) - Aspect Ratio: ${video.videoWidth}x${
+        video.videoHeight
+      }`,
+      icon: <Upload className="h-4 w-4" />,
+      duration: 3000,
+    });
+
     const { width, height } = getCanvasDimensions();
     canvasRef.current.width = width;
     canvasRef.current.height = height;
+
+    if (outputCanvasRef.current) {
+      outputCanvasRef.current.width = width;
+      outputCanvasRef.current.height = height;
+    }
 
     renderFrame();
   };
@@ -162,6 +184,12 @@ const VideoEditor = () => {
       const { width, height } = getCanvasDimensions();
       canvasRef.current.width = width;
       canvasRef.current.height = height;
+
+      if (outputCanvasRef.current) {
+        outputCanvasRef.current.width = width;
+        outputCanvasRef.current.height = height;
+      }
+
       renderFrame();
     }
   }, [resolution]);
@@ -179,14 +207,6 @@ const VideoEditor = () => {
         cancelAnimationFrame(rafId.current);
         rafId.current = null;
       }
-
-      toast.success('Video uploaded', {
-        description: `${file.name} (${(file.size / (1024 * 1024)).toFixed(
-          2
-        )} MB)`,
-        icon: <Upload className="h-4 w-4" />,
-        duration: 3000,
-      });
     }
   };
 
@@ -204,6 +224,13 @@ const VideoEditor = () => {
 
     try {
       const { width, height } = getCanvasDimensions();
+
+      const videoClone = document.createElement('video');
+      videoClone.src = videoUrl as string;
+      videoClone.muted = true;
+      videoClone.load();
+
+      const duration = videoRef.current.duration;
 
       const tempCanvas = document.createElement('canvas');
       tempCanvas.width = width;
@@ -254,7 +281,9 @@ const VideoEditor = () => {
       }
 
       const mimeType =
-        format === 'mp4' ? 'video/mp4;codecs=h264' : 'video/webm;codecs=vp9';
+        format === 'mp4'
+          ? 'video/mp4;codecs=avc1,mp4a.40.2'
+          : 'video/webm;codecs=vp9';
 
       const mediaRecorder = new MediaRecorder(combinedStream, {
         mimeType: mimeType,
@@ -285,8 +314,6 @@ const VideoEditor = () => {
         audioSourceNode.start();
       }
 
-      const video = videoRef.current;
-      const duration = video.duration;
       const totalFrames = Math.ceil(duration * fps);
       const frameInterval = 1 / fps;
 
@@ -294,16 +321,16 @@ const VideoEditor = () => {
         const currentTime = i * frameInterval;
         if (currentTime > duration) break;
 
-        video.currentTime = currentTime;
+        videoClone.currentTime = currentTime;
         await new Promise(resolve => {
           const seekHandler = () => {
-            video.removeEventListener('seeked', seekHandler);
+            videoClone.removeEventListener('seeked', seekHandler);
             resolve(null);
           };
-          video.addEventListener('seeked', seekHandler);
+          videoClone.addEventListener('seeked', seekHandler);
         });
 
-        tempCtx.drawImage(video, 0, 0, width, height);
+        tempCtx.drawImage(videoClone, 0, 0, width, height);
         const frameData = tempCtx.getImageData(0, 0, width, height);
 
         const filteredData = await new Promise(resolve => {
@@ -360,6 +387,8 @@ const VideoEditor = () => {
           duration: 4000,
         });
       }
+
+      videoClone.remove();
     } catch (error) {
       console.error('Export error:', error);
       toast.error('Export failed', {
@@ -408,9 +437,7 @@ const VideoEditor = () => {
               <p className="text-sm text-gray-500 mb-4">
                 Click or drag and drop your video file
               </p>
-              <Button variant="outline" onClick={triggerFileInput}>
-                Select Video
-              </Button>
+              <Button variant="outline">Select Video</Button>
             </div>
           ) : (
             <Tabs defaultValue="preview" className="w-full">
@@ -429,6 +456,7 @@ const VideoEditor = () => {
                     ref={canvasRef}
                     className="w-full h-auto max-h-96 mx-auto"
                   />
+                  <canvas ref={outputCanvasRef} className="hidden" />
 
                   <div className="absolute bottom-4 left-4 flex gap-2">
                     <Button
